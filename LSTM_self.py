@@ -1,6 +1,6 @@
-import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.init as init
 
 
 def sigmoid(matrix):
@@ -18,11 +18,26 @@ def tanh(matrix):
 
 
 def tanh_derivative(matrix):
-    return 1 - np.tanh(matrix) ** 2
+    return 1 - torch.tanh(matrix) ** 2
 
 
-class LSTM:
+# 辅助函数，用于初始化参数
+def init_param(shape):
+    param = nn.Parameter(torch.empty(*shape))
+    init.xavier_uniform_(param)  # xavier参数初始化方式，适用于 tanh/sigmoid
+    return param
+
+
+# 辅助函数：用于累加梯度，自动处理 .grad 初始化为 0 的情况
+def accumulate_grad(param, grad):
+    if param.grad is None:
+        param.grad = torch.zeros_like(param)
+    param.grad += grad
+
+
+class LSTM(nn.Module):
     def __init__(self, n: int, in_dimension: int, out_dimension, h_list: list):
+        super().__init__()
         # 输入批次大小
         self.n = n
 
@@ -38,13 +53,19 @@ class LSTM:
         # 隐藏层数量
         self.h_num = len(self.h_list)
 
+        # dropout概率
+        self.dropout_rate = 0.3
+
         # 将初始输入的n×d的d视作上一个隐藏层的输出,便于后续代码实现
         # 此时h_list[0]为d, h_list[m]为第m个隐藏层的h, h_list[m+1]为最终输出的维度大小
         self.h_list.insert(0, self.in_d)
-        self.h_list.append(out_dimension)
+        self.h_list.append(self.out_d)
 
         # X_list[i]存放对于隐藏层i的输入X  n×d -> n×h_m-1
         self.X_list = [torch.zeros(self.n, self.h_list[i]) for i in range(self.h_num)]
+
+        # Y_list[i]存放对于每个时间步t的输出Yt
+        self.Y_list = []
 
         # H_list[i]存放隐藏层i的隐藏输出H  n×h -> n×h_m
         self.H_list = [torch.zeros(self.n, self.h_list[i]) for i in range(1, self.h_num + 1)]
@@ -52,45 +73,49 @@ class LSTM:
         # C_list[i]存放隐藏层i当前时间步的记忆元C, 与H形状相同  n×h -> n×h_m
         self.C_list = [torch.zeros(self.n, self.h_list[i]) for i in range(1, self.h_num + 1)]
 
-        # C_old_list存放隐藏层i上一时间步的记忆元C_t-1
-        self.C_old_list = self.C_list = [torch.zeros(self.n, self.h_list[i]) for i in range(1, self.h_num + 1)]
+        # C_prev_list存放隐藏层i上一时间步的记忆元C_t-1
+        self.C_prev_list = self.C_list = [torch.zeros(self.n, self.h_list[i]) for i in range(1, self.h_num + 1)]
 
         # 参数矩阵列表
-        # d×h
-        self.W_xi_list = nn.ParameterList([nn.Parameter(torch.randn(self.h_list[i], self.h_list[i + 1])) for i in range(self.h_num)])  # 输入门
-        self.W_xf_list = [torch.randn(self.h_list[i], self.h_list[i + 1]) for i in range(self.h_num)]  # 遗忘门
-        self.W_xo_list = [torch.randn(self.h_list[i], self.h_list[i + 1]) for i in range(self.h_num)]  # 输出门
-        self.W_xc_list = [torch.randn(self.h_list[i], self.h_list[i + 1]) for i in range(self.h_num)]  # 候选记忆元
+        # W_x 系列 d × h
+        self.W_xi_list = nn.ParameterList([init_param((self.h_list[i], self.h_list[i + 1])) for i in range(self.h_num)])
+        self.W_xf_list = nn.ParameterList([init_param((self.h_list[i], self.h_list[i + 1])) for i in range(self.h_num)])
+        self.W_xo_list = nn.ParameterList([init_param((self.h_list[i], self.h_list[i + 1])) for i in range(self.h_num)])
+        self.W_xc_list = nn.ParameterList([init_param((self.h_list[i], self.h_list[i + 1])) for i in range(self.h_num)])
 
-        # h×h
-        self.W_hi_list = [torch.randn(self.h_list[i + 1], self.h_list[i + 1]) for i in range(self.h_num)]  # 输入门
-        self.W_hf_list = [torch.randn(self.h_list[i + 1], self.h_list[i + 1]) for i in range(self.h_num)]  # 遗忘门
-        self.W_ho_list = [torch.randn(self.h_list[i + 1], self.h_list[i + 1]) for i in range(self.h_num)]  # 输出门
-        self.W_hc_list = [torch.randn(self.h_list[i + 1], self.h_list[i + 1]) for i in range(self.h_num)]  # # 候选记忆元
+        # W_h 系列 h × h
+        self.W_hi_list = nn.ParameterList([init_param((self.h_list[i + 1], self.h_list[i + 1])) for i in range(self.h_num)])
+        self.W_hf_list = nn.ParameterList([init_param((self.h_list[i + 1], self.h_list[i + 1])) for i in range(self.h_num)])
+        self.W_ho_list = nn.ParameterList([init_param((self.h_list[i + 1], self.h_list[i + 1])) for i in range(self.h_num)])
+        self.W_hc_list = nn.ParameterList([init_param((self.h_list[i + 1], self.h_list[i + 1])) for i in range(self.h_num)])
 
-        # n×h
-        self.b_i_list = [torch.randn(n, self.h_list[i + 1]) for i in range(self.h_num)]  # 输入门
-        self.b_f_list = [torch.randn(n, self.h_list[i + 1]) for i in range(self.h_num)]  # 遗忘门
-        self.b_o_list = [torch.randn(n, self.h_list[i + 1]) for i in range(self.h_num)]  # 输出门
-        self.b_c_list = [torch.randn(n, self.h_list[i + 1]) for i in range(self.h_num)]  # 候选记忆元
+        # 偏置项 1×h，在加法时会自动被拓展为n×h
+        self.b_i_list = nn.ParameterList([nn.Parameter(torch.zeros(1, self.h_list[i + 1])) for i in range(self.h_num)])  # 输入门
+        self.b_f_list = nn.ParameterList([nn.Parameter(torch.zeros(1, self.h_list[i + 1])) for i in range(self.h_num)])  # 遗忘门
+        self.b_o_list = nn.ParameterList([nn.Parameter(torch.zeros(1, self.h_list[i + 1])) for i in range(self.h_num)])  # 输出门
+        self.b_c_list = nn.ParameterList([nn.Parameter(torch.zeros(1, self.h_list[i + 1])) for i in range(self.h_num)])  # 候选记忆元
 
         # n×h, Z = XW + HW + b
-        self.Z_i_list = [torch.randn(n, self.h_list[i + 1]) for i in range(self.h_num)]
-        self.Z_f_list = [torch.randn(n, self.h_list[i + 1]) for i in range(self.h_num)]
-        self.Z_o_list = [torch.randn(n, self.h_list[i + 1]) for i in range(self.h_num)]
-        self.Z_c_list = [torch.randn(n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.Z_i_list = [torch.zeros(n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.Z_f_list = [torch.zeros(n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.Z_o_list = [torch.zeros(n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.Z_c_list = [torch.zeros(n, self.h_list[i + 1]) for i in range(self.h_num)]
 
-        # 每层隐藏层的最终输出
-        # h_m×h_m+1(out_d)
-        self.W_hq_list = [torch.randn(self.h_list[i + 1], self.h_list[i + 2]) for i in range(self.h_num)]
+        # n×h
+        self.I_list = [torch.zeros(n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.F_list = [torch.ones(n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.O_list = [torch.zeros(n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.C_tilda_list = [torch.zeros(n, self.h_list[i + 1]) for i in range(self.h_num)]
 
-        # n×h_m+1(out_d)
-        self.b_hq_list = [(n, self.h_list[i + 2]) for i in range(self.h_num)]
+        # h×h，最后一项改为h×out_d
+        self.W_hq_list = nn.ParameterList(
+            [nn.Parameter(torch.randn(self.h_list[i + 1], self.h_list[i + 1]) if i < self.h_num - 1 else torch.randn(self.h_list[i + 1], self.h_list[i + 2])) for i in range(self.h_num)])
 
-        self.I_list = []
-        self.F_list = []
-        self.O_list = []
-        self.C_tilda_list = []
+        # 1×h_m+1(out_d)
+        self.b_hq_list = nn.ParameterList([nn.Parameter(torch.randn(1, self.h_list[i + 1]) if i < self.h_num - 1 else torch.randn(1, self.h_list[i + 2])) for i in range(self.h_num)])
+
+        # 优化器
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=0.01, weight_decay=1e-5)
 
     # 从序号为index的layer处获取参数
     def get_backward_params_of_layer(self, index: int):
@@ -127,13 +152,13 @@ class LSTM:
         O = self.O_list[index]
         C = self.C_list[index]
 
-        C_old = self.C_old_list[index]
+        C_prev = self.C_prev_list[index]
         C_tilda = self.C_tilda_list[index]
 
         W_q = self.W_hq_list[index]
         b_q = self.b_hq_list[index]
 
-        return X, H, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, Z_i, Z_f, Z_o, Z_c, I, F, O, C, C_old, C_tilda, W_q, b_q
+        return X, H, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, Z_i, Z_f, Z_o, Z_c, I, F, O, C, C_prev, C_tilda, W_q, b_q
 
     def get_forward_params_of_layer(self, index: int):
         # index范围是0 ~ h_num - 1
@@ -141,6 +166,7 @@ class LSTM:
             print("Error: get params from unexpected Layer")
             return None
 
+        # 克隆输入、状态、权重和偏置，避免意外修改
         X = self.X_list[index]
         H = self.H_list[index]
         C = self.C_list[index]
@@ -165,99 +191,205 @@ class LSTM:
 
         return X, H, C, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, W_q, b_q
 
-    # 前向传播
-    def forward(self):
+    # 前向传播,输入X的形状为(seq_len, batch, input_dimension)
+    def forward(self, input):
+        # 初始化参数
         h_num = self.h_num
-        # 开始逐层前向传播
-        for i in range(h_num):
-            X, H, C, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, W_q, b_q = self.get_forward_params_of_layer(i)
+        seq_len = input.shape[0]
+        Y = None
+        self.Y_list = []
 
-            # 输入门I n×h
-            Z_i = X @ W_xi + H @ W_hi + b_i
-            self.Z_i_list[i] = Z_i
-            I = sigmoid(Z_i)
-            self.I_list[i] = I
+        # 逐时间步从最底层输入
+        for t in range(seq_len):
+            print(f"当前时间步t = {t}\n")
+            print(f"Xt={input.shape}")
+            self.X_list[0] = input[t]
 
-            # 遗忘门F n×h
-            Z_f = X @ W_xf + H @ W_hf + b_f
-            self.Z_f_list[i] = Z_f
-            F = sigmoid(Z_f)
-            self.F_list[i] = F
+            # 开始逐层前向传播
+            for i in range(h_num):
+                print(f"前向传播至第{i}层")
+                X, H, C, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, W_q, b_q = self.get_forward_params_of_layer(i)
 
-            # 输出门0 n×h
-            Z_o = X @ W_xo + H @ W_ho + b_o
-            self.Z_o_list = Z_o
-            O = sigmoid(Z_o)
-            self.O_list[i] = O
+                # 输入门I n×h
+                Z_i = X @ W_xi + H @ W_hi + b_i
+                self.Z_i_list[i] = Z_i
 
-            # 候选细胞状态C_tilda n×h
-            C_tilda = tanh(X @ W_xc + H @ W_hc + b_c)
-            self.C_tilda_list[i] = C_tilda
+                I = sigmoid(Z_i)
+                self.I_list[i] = I
 
-            # 记录C_t-1，便于计算反向传播
-            self.C_old_list[i] = C
+                # 遗忘门F n×h
+                Z_f = X @ W_xf + H @ W_hf + b_f
+                self.Z_f_list[i] = Z_f
 
-            # 新的细胞状态，由 遗忘门×过去细胞状态 + 输入门×候选细胞状态组成（注意这里是按元素乘法而非矩阵乘法）
-            C = F * C + I * C_tilda
+                F = sigmoid(Z_f)
+                self.F_list[i] = F
 
-            # 新的隐藏状态 n×h
-            H = O * tanh(C)
+                # 输出门0 n×h
+                Z_o = X @ W_xo + H @ W_ho + b_o
+                self.Z_o_list[i] = Z_o
 
-            # 存储更新后的记忆元和隐藏元
-            self.H_list[i] = H
-            self.C_list[i] = C
+                O = sigmoid(Z_o)
+                self.O_list[i] = O
 
-            # 计算最终输出
-            Y = H @ W_q + b_q
+                # 候选细胞状态C_tilda n×h
+                C_tilda = tanh(X @ W_xc + H @ W_hc + b_c)
+                self.C_tilda_list[i] = C_tilda
 
-            # 上一层的输出作为下一层的输入
-            if i < h_num:
-                self.X_list[i + 1] = Y
-            else:
-                return Y
+                # 记录C_t-1，便于计算反向传播
+                self.C_prev_list[i] = C
 
-    def backward(self):
-        # 初始化存放每层的梯度
-        dW_xi_list = [torch.zeros_like(W) for W in self.W_xi_list]
-        dW_hi_list = [torch.zeros_like(W) for W in self.W_hi_list]
-        dW_xf_list = [torch.zeros_like(W) for W in self.W_xf_list]
-        dW_hf_list = [torch.zeros_like(W) for W in self.W_hf_list]
-        dW_xo_list = [torch.zeros_like(W) for W in self.W_xo_list]
-        dW_ho_list = [torch.zeros_like(W) for W in self.W_ho_list]
-        dW_xc_list = [torch.zeros_like(W) for W in self.W_xc_list]
-        dW_hc_list = [torch.zeros_like(W) for W in self.W_hc_list]
-        dW_q_list = [torch.zeros_like(W) for W in self.W_hq_list]
-        db_q_list = [torch.zeros((1, W.shape[1])) for W in self.W_hq_list]  # n × d_out
+                # 新的细胞状态，由 遗忘门×过去细胞状态 + 输入门×候选细胞状态组成（注意这里是按元素乘法而非矩阵乘法）
+                C = F * C + I * C_tilda
+
+                # 新的隐藏状态 n×h
+                H = O * tanh(C)
+
+                # 存储更新后的记忆元和隐藏元
+                self.H_list[i] = H
+                self.C_list[i] = C
+
+                # 计算当前层的输出
+                Y = H @ W_q + b_q
+
+                # 上一层的输出作为下一层的输入
+                if i < h_num - 1:
+                    self.X_list[i + 1] = Y
+
+            # 最后一层的输出作为当前时间步的最终输出
+            self.Y_list.append(Y.detach())
+
+        # 返回最后1时间步的最终输出
+        return Y
+
+    # 反向传播, 输入每个时间步的梯度dY
+    def backward(self, dY_list):
+        print("开始反向传播\n")
+        _dY_list = dY_list
+
+        # 初始化清空梯度
+        self.optimizer.zero_grad()
+
+        # 初始化每层的由下一时间步传上来的H和C梯度列表
+        dH_next_list = [None for _ in range(self.h_num)]
+        dC_next_list = [None for _ in range(self.h_num)]
+
+        # 逐时间步反向传播
+        for t in reversed(range(len(_dY_list))):
+            print(f"反向传播至时间步{t}")
+            # 初始化每个时间步传输最顶层的dY, dH, dC
+            dY = _dY_list[t].clone()
+
+            for i in reversed(range(self.h_num)):
+                print(f"反向传播至第{i}层")
+                # 获取上一时间步传来的dH和dC
+                dH_next = dH_next_list[i]
+                dC_next = dC_next_list[i]
+
+                # 逐层反向传播
+                dY, dH_next, dC_next = self.layer_backward(i, dY, dH_next, dC_next)
+
+                # 更新梯度传递列表
+                dH_next_list[i] = dH_next
+                dC_next_list[i] = dC_next
+
+        # 梯度裁剪，防止梯度爆炸
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5.0)
+
+        self.optimizer.step()
 
     # 单层的反向传播
-    def layer_backward(self, index, dY):
-        X, H, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, Z_i, Z_f, Z_o, Z_c, I, F, O, C, C_old, C_tilda, W_q, b_q = self.get_backward_params_of_layer(index)
-        dH = dY @ W_q.t()
-        dW_q = H.t() @ dY
-        db_q = dY
-        dO = dH * tanh(C)
-        dC = O * dH * tanh_derivative(C)
+    def layer_backward(self, index, dY, dH_next=None, dC_next=None):
+        X, H, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, Z_i, Z_f, Z_o, Z_c, I, F, O, C, C_prev, C_tilda, W_q, b_q = self.get_backward_params_of_layer(index)
 
-        dF = dC * C_old
+        if dH_next is None:
+            dH_next = torch.zeros_like(H)
+        if dC_next is None:
+            dC_next = torch.zeros_like(C)
+
+        # 前半部分是来自当前时间步Y_t的梯度
+        # 由于每个Y计算时都使用了Ht-1，故要再算上Y_t+1计算出的H的梯度dH_next
+        dH = dY @ W_q.t() + dH_next
+
+        dW_q = H.t() @ dY
+        db_q = dY.sum(dim=0, keepdim=True)
+        dO = dH * tanh(C)
+
+        # 同理,C的梯度是由H传递下来的
+        dC = O * dH * tanh_derivative(C) + dC_next
+
+        dF = dC * C_prev
         dI = dC * C_tilda
+        dC_prev = dC * F
         dC_tilda = dC * I
 
-        db_i = tanh_derivative(Z_i) * dI
-        dW_xi = X.t() @ db_i
-        dW_hi = H.t() @ db_i
+        dZ_i = sigmoid_derivative(Z_i) * dI
+        dZ_f = sigmoid_derivative(Z_f) * dF
+        dZ_o = sigmoid_derivative(Z_o) * dO
+        dZ_c = tanh_derivative(Z_c) * dC_tilda
 
-        db_f = tanh_derivative(Z_f) * dF
-        dW_xf = X.t() @ db_f
-        dW_hf = H.t() @ db_f
+        dW_xi = X.t() @ dZ_i
+        dW_hi = H.t() @ dZ_i
+        db_i = dZ_i.sum(dim=0, keepdim=True)  # b 是 n×h 的，要按 batch 做 sum，下面同理
 
-        db_o = tanh_derivative(Z_c) * dO
-        dW_xo = X.t() @ db_o
-        dW_ho = H.t() @ db_o
+        dW_xf = X.t() @ dZ_f
+        dW_hf = H.t() @ dZ_f
+        db_f = dZ_f.sum(dim=0, keepdim=True)
 
-        db_c = tanh_derivative(Z_c) * dC_tilda
-        dW_xc = X.t() @ db_c
-        dW_hc = H.t() @ db_c
+        dW_xo = X.t() @ dZ_o
+        dW_ho = H.t() @ dZ_o
+        db_o = dZ_o.sum(dim=0, keepdim=True)
 
-        dX = db_i @ W_xi.t()
-        # if dX != db_c @ W_xc.t():
-        #     print("Error")
+        dW_xc = X.t() @ dZ_c
+        dW_hc = H.t() @ dZ_c
+        db_c = dZ_c.sum(dim=0, keepdim=True)
+
+        # X的梯度是四个门方向的梯度之和
+        dX = dZ_i @ W_xi.t() + dZ_f @ W_xf.t() + dZ_o @ W_xo.t() + dZ_c @ W_xc.t()
+
+        # 计算传递到前一时刻隐藏状态的梯度
+        # 这部分梯度来源于所有门中，Ht-1 参与了各自的线性运算（作为递归部分）
+        dH_prev = dZ_i @ W_hi.t() + dZ_f @ W_hf.t() + dZ_o @ W_ho.t() + dZ_c @ W_hc.t()
+
+        # 累加每个时间步的梯度
+        accumulate_grad(self.W_xi_list[index], dW_xi)
+        accumulate_grad(self.W_hi_list[index], dW_hi)
+        accumulate_grad(self.b_i_list[index], db_i)
+
+        accumulate_grad(self.W_xf_list[index], dW_xf)
+        accumulate_grad(self.W_hf_list[index], dW_hf)
+        accumulate_grad(self.b_f_list[index], db_f)
+
+        accumulate_grad(self.W_xo_list[index], dW_xo)
+        accumulate_grad(self.W_ho_list[index], dW_ho)
+        accumulate_grad(self.b_o_list[index], db_o)
+
+        accumulate_grad(self.W_xc_list[index], dW_xc)
+        accumulate_grad(self.W_hc_list[index], dW_hc)
+        accumulate_grad(self.b_c_list[index], db_c)
+
+        accumulate_grad(self.W_hq_list[index], dW_q)
+        accumulate_grad(self.b_hq_list[index], db_q)
+
+        return dX, dH_prev, dC_prev
+
+    def clear_memory(self):
+        """
+        清理内存，避免内存泄漏
+        """
+        # 清除 X_list, Y_list, H_list 和 C_list 的张量内容
+        self.X_list = [torch.zeros(self.n, self.h_list[i]) for i in range(self.h_num)]
+        self.Y_list = []  # 清空每次时间步的输出
+        self.H_list = [torch.zeros(self.n, self.h_list[i]) for i in range(1, self.h_num + 1)]
+        self.C_list = [torch.zeros(self.n, self.h_list[i]) for i in range(1, self.h_num + 1)]
+        self.C_prev_list = self.C_list  # 重新赋值避免重复内存
+
+        # 清除存储在计算图中的中间变量（Z, I, F, O, C_tilda）
+        self.Z_i_list = [torch.zeros(self.n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.Z_f_list = [torch.zeros(self.n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.Z_o_list = [torch.zeros(self.n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.Z_c_list = [torch.zeros(self.n, self.h_list[i + 1]) for i in range(self.h_num)]
+
+        self.I_list = [torch.zeros(self.n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.F_list = [torch.ones(self.n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.O_list = [torch.zeros(self.n, self.h_list[i + 1]) for i in range(self.h_num)]
+        self.C_tilda_list = [torch.zeros(self.n, self.h_list[i + 1]) for i in range(self.h_num)]

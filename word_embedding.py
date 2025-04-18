@@ -4,10 +4,10 @@ import shutil
 import chardet
 import pandas as pd
 
-input_file = 'sgns.target.word-word.dynwin5.thr10.neg5.dim300.iter5.bz2'
-output_file = 'sgns.target.word-word.dynwin5.thr10.neg5.dim300.iter5.txt'
+input_file = 'data/sgns.target.word-word.dynwin5.thr10.neg5.dim300.iter5.bz2'
+output_file = 'WordEmbeddingMap.txt'
 
-input_txt = 'sgns.target.word-word.dynwin5.thr10.neg5.dim300.iter5.txt'
+input_txt = 'WordEmbeddingMap.txt'
 output_csv = 'word_embeddings.csv'
 
 
@@ -45,7 +45,10 @@ def to_csv():
 
 
 def main():
-    to_csv()
+    # 写入纯文本文件，每行为“我爱吃苹果”
+    with open("apple_data.txt", "w", encoding="utf-8") as f:
+        for _ in range(1000):
+            f.write("我爱吃苹果\n")
 
 
 if __name__ == '__main__':
