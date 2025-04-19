@@ -36,50 +36,6 @@ embedding_dict, word2index_dict = torch.load(embedding_pt_path), torch.load(word
 print("embedding dict loaded")
 
 
-def fake_data_test():
-    # 假设一个批次的样本数为 3，序列长度为 7，输入特征维度为 10
-    batch_size = 7
-    sequence_length = 8
-    in_dimension = 10
-    out_dimension = 20
-
-    # 随机生成输入数据（假数据）
-    X = torch.randn(sequence_length, batch_size, in_dimension)  # (seq_len, batch_size, in_dimension)
-    Y_true = torch.randint(0, out_dimension, (batch_size,), dtype=torch.long)  # 每个样本一个类别
-
-    model = LSTM(batch_size, in_dimension, out_dimension, [3, 4])
-    model.train()
-
-    losses = []
-
-    for epoch in range(150):
-        # 传入模型进行前向传播
-        Y = model.forward(X)
-
-        # # 打印输出，检查是否正常运行
-        # print(f"输出Y为:{Y}")
-
-        # 计算交叉熵损失和dY，进行反向传播
-        softmax_output = torch.softmax(Y, dim=1)  # (batch_size, vocab_size)
-        eps = 1e-9
-        log_probs = torch.log(softmax_output + eps)  # 防止 log(0)
-        Y_one_hot = torch.nn.functional.one_hot(Y_true, num_classes=Y.shape[1]).float()
-
-        loss = - (Y_one_hot * log_probs).sum(dim=1).mean()
-        print("Epoch: {}, Loss: {}".format(epoch, loss))
-        losses.append(loss.item())
-
-        dY = softmax_output - Y_one_hot
-        model.backward(dY)
-
-    # 绘制损失曲线
-    plt.plot(range(len(losses)), losses)  # x 轴为 epoch，y 轴为损失
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('Training Loss Over Epochs')
-    plt.show()
-
-
 # 加载词嵌入向量字典
 def load_embedding_from_csv(filepath):
     # 词向量字典
@@ -206,9 +162,6 @@ def tokens_to_tensor(tokenized_data, embedding_dict, max_len=None):
 
 
 def train():
-    # embedding_dict, word2index_dict = load_embedding_from_pt()
-    # print("embedding dict loaded")
-
     # 构造训练数据,转换为词向量(batch, seq_len, embed_dim)
     input_sentences = input_texts
     input_tokenized = tokenize_sentences(input_sentences, embedding_dict)
@@ -231,6 +184,7 @@ def train():
     model.train()
 
     losses = []
+    total_loss = 0
     loss_func = torch.nn.MSELoss(reduction='mean')
 
     for epoch in range(25):
