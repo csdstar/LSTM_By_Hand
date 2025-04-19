@@ -35,6 +35,48 @@ def accumulate_grad(param, grad):
     param.grad += grad
 
 
+# 辅助函数，用于记录并打印每次梯度迭代过程中产生的最大梯度范数
+def check_all_gradients(model):
+    max_grad_value = -1
+    max_grad_name = None
+    max_tensor = None
+
+    def check_and_log(name, tensor, verbose=False):
+        nonlocal max_grad_value, max_grad_name, max_tensor
+        grad_norm = torch.norm(tensor).item()
+        grad_max = tensor.abs().max().item()
+        grad_mean = tensor.abs().mean().item()
+        if verbose:
+            print(f"{name}: grad_norm={grad_norm:.6f}, grad_max={grad_max:.6f}, grad_mean={grad_mean:.6f}")
+        if grad_max > max_grad_value:
+            max_grad_value = grad_max
+            max_grad_name = name
+            max_tensor = tensor
+
+    for i in range(model.h_num):
+        check_and_log(f"W_xi[{i}]", model.W_xi_list[i])
+        check_and_log(f"W_hi[{i}]", model.W_hi_list[i])
+        check_and_log(f"b_i[{i}]", model.b_i_list[i])
+
+        check_and_log(f"W_xf[{i}]", model.W_xf_list[i])
+        check_and_log(f"W_hf[{i}]", model.W_hf_list[i])
+        check_and_log(f"b_f[{i}]", model.b_f_list[i])
+
+        check_and_log(f"W_xo[{i}]", model.W_xo_list[i])
+        check_and_log(f"W_ho[{i}]", model.W_ho_list[i])
+        check_and_log(f"b_o[{i}]", model.b_o_list[i])
+
+        check_and_log(f"W_xc[{i}]", model.W_xc_list[i])
+        check_and_log(f"W_hc[{i}]", model.W_hc_list[i])
+        check_and_log(f"b_c[{i}]", model.b_c_list[i])
+
+        check_and_log(f"W_hq[{i}]", model.W_hq_list[i])
+        check_and_log(f"b_hq[{i}]", model.b_hq_list[i])
+
+    print(f"\n⚠️ 当前最大梯度项：{max_grad_name}, grad_max = {max_grad_value:.6f}\n")
+    check_and_log(max_grad_name, max_tensor, True)
+
+
 class LSTM(nn.Module):
     def __init__(self, n: int, in_dimension: int, out_dimension, h_list: list):
         super().__init__()
@@ -193,6 +235,7 @@ class LSTM(nn.Module):
 
     # 前向传播,输入X的形状为(seq_len, batch, input_dimension)
     def forward(self, input):
+        # print("\n开始前向传播\n")
         # 初始化参数
         h_num = self.h_num
         seq_len = input.shape[0]
@@ -201,13 +244,11 @@ class LSTM(nn.Module):
 
         # 逐时间步从最底层输入
         for t in range(seq_len):
-            print(f"当前时间步t = {t}\n")
-            print(f"Xt={input.shape}")
             self.X_list[0] = input[t]
 
             # 开始逐层前向传播
             for i in range(h_num):
-                print(f"前向传播至第{i}层")
+                # print(f"前向传播至第{i}层")
                 X, H, C, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, W_q, b_q = self.get_forward_params_of_layer(i)
 
                 # 输入门I n×h
@@ -258,12 +299,12 @@ class LSTM(nn.Module):
             # 最后一层的输出作为当前时间步的最终输出
             self.Y_list.append(Y.detach())
 
-        # 返回最后1时间步的最终输出
+        # 返回最后一时间步的最终输出Y, n×out_dim
         return Y
 
     # 反向传播, 输入每个时间步的梯度dY
     def backward(self, dY_list):
-        print("开始反向传播\n")
+        # print("\n开始反向传播\n")
         _dY_list = dY_list
 
         # 初始化清空梯度
@@ -275,12 +316,11 @@ class LSTM(nn.Module):
 
         # 逐时间步反向传播
         for t in reversed(range(len(_dY_list))):
-            print(f"反向传播至时间步{t}")
+            # print(f"反向传播至时间步{t}")
             # 初始化每个时间步传输最顶层的dY, dH, dC
             dY = _dY_list[t].clone()
 
             for i in reversed(range(self.h_num)):
-                print(f"反向传播至第{i}层")
                 # 获取上一时间步传来的dH和dC
                 dH_next = dH_next_list[i]
                 dC_next = dC_next_list[i]
