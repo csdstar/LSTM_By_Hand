@@ -232,7 +232,7 @@ def train():
             # 反向传播, 包含zero和step
             model.backward(dY_list)
 
-            # 打印当前所有梯度的最大值和分布
+            # 打印当前所有梯度的最大值和分布////
             # check_all_gradients(model)
 
             # 清理缓存
