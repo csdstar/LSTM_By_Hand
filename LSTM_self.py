@@ -31,27 +31,46 @@ def init_param(shape):
 # 辅助函数：用于累加梯度，自动处理 .grad 初始化为 0 的情况
 def accumulate_grad(param, grad):
     if param.grad is None:
-        param.grad = torch.zeros_like(param)
-    param.grad += grad
+        param.grad = torch.zeros_like(param, dtype=param.dtype, device=param.device)
+
+    param.grad += grad.detach().to(param.dtype)
 
 
 # 辅助函数，用于记录并打印每次梯度迭代过程中产生的最大梯度范数
 def check_all_gradients(model):
-    max_grad_value = -1
+    # 全局极值
+    max_grad_value = -float('inf')
     max_grad_name = None
     max_tensor = None
 
+    min_grad_value = float('inf')
+    min_grad_name = None
+    min_tensor = None
+
     def check_and_log(name, tensor, verbose=False):
-        nonlocal max_grad_value, max_grad_name, max_tensor
+        if tensor is None or tensor is None:
+            print("tensor或grad是none!")
+            return
+        nonlocal max_grad_value, max_grad_name, max_tensor, min_grad_value, min_grad_name, min_tensor
+
+        # 当前梯度的均值、正则化矩阵、极值
         grad_norm = torch.norm(tensor).item()
         grad_max = tensor.abs().max().item()
+        grad_min = tensor.abs().min().item()
         grad_mean = tensor.abs().mean().item()
+
         if verbose:
-            print(f"{name}: grad_norm={grad_norm:.6f}, grad_max={grad_max:.6f}, grad_mean={grad_mean:.6f}")
+            print(f"{name}: grad_norm={grad_norm:.6f}, grad_max={grad_max:.6f}, grad_min={grad_min:.6f}, grad_mean={grad_mean:.6f}")
+
         if grad_max > max_grad_value:
             max_grad_value = grad_max
             max_grad_name = name
             max_tensor = tensor
+
+        if grad_min < min_grad_value:
+            min_grad_value = grad_min
+            min_grad_name = name
+            min_tensor = tensor
 
     for i in range(model.h_num):
         check_and_log(f"W_xi[{i}]", model.W_xi_list[i])
@@ -75,6 +94,19 @@ def check_all_gradients(model):
 
     print(f"\n⚠️ 当前最大梯度项：{max_grad_name}, grad_max = {max_grad_value:.6f}\n")
     check_and_log(max_grad_name, max_tensor, True)
+    print(f"\n⚠️ 当前最小梯度项：{min_grad_name}, grad_min = {min_grad_value:.6f}\n")
+    check_and_log(min_grad_name, min_tensor, True)
+
+
+# 辅助函数,用于检查反向传播中的tensor是否有问题
+def check_tensor(name, tensor, index):
+    if tensor is None:
+        print(f"❌ 第{index}层传播的 {name} 是 None")
+        return
+    if torch.isnan(tensor).any():
+        print(f"❌ 第{index}层传播的 {name} 中存在 NaN")
+    if torch.isinf(tensor).any():
+        print(f"❌ 第{index}层传播的 {name} 中存在 Inf")
 
 
 class LSTM(nn.Module):
@@ -111,6 +143,9 @@ class LSTM(nn.Module):
 
         # H_list[i]存放隐藏层i的隐藏输出H  n×h -> n×h_m
         self.H_list = [torch.zeros(self.n, self.h_list[i]) for i in range(1, self.h_num + 1)]
+
+        # H_prev_list存放隐藏层i上一时间步的记忆元H_t-1
+        self.H_prev_list = [torch.zeros(self.n, self.h_list[i]) for i in range(1, self.h_num + 1)]
 
         # C_list[i]存放隐藏层i当前时间步的记忆元C, 与H形状相同  n×h -> n×h_m
         self.C_list = [torch.zeros(self.n, self.h_list[i]) for i in range(1, self.h_num + 1)]
@@ -166,41 +201,42 @@ class LSTM(nn.Module):
             print("Error: get params from unexpected Layer")
             return None
 
-        X = self.X_list[index]
-        H = self.H_list[index]
+        X = self.X_list[index].detach()
+        H = self.H_list[index].detach()
+        H_prev = self.H_prev_list[index].detach()
 
-        W_xi = self.W_xi_list[index]
-        W_xf = self.W_xf_list[index]
-        W_xo = self.W_xo_list[index]
-        W_xc = self.W_xc_list[index]
+        W_xi = self.W_xi_list[index].detach()
+        W_xf = self.W_xf_list[index].detach()
+        W_xo = self.W_xo_list[index].detach()
+        W_xc = self.W_xc_list[index].detach()
 
-        W_hi = self.W_hi_list[index]
-        W_hf = self.W_hf_list[index]
-        W_ho = self.W_ho_list[index]
-        W_hc = self.W_hc_list[index]
+        W_hi = self.W_hi_list[index].detach()
+        W_hf = self.W_hf_list[index].detach()
+        W_ho = self.W_ho_list[index].detach()
+        W_hc = self.W_hc_list[index].detach()
 
-        b_i = self.b_i_list[index]
-        b_f = self.b_f_list[index]
-        b_o = self.b_o_list[index]
-        b_c = self.b_c_list[index]
+        b_i = self.b_i_list[index].detach()
+        b_f = self.b_f_list[index].detach()
+        b_o = self.b_o_list[index].detach()
+        b_c = self.b_c_list[index].detach()
 
-        Z_i = self.Z_i_list[index]
-        Z_f = self.Z_f_list[index]
-        Z_o = self.Z_o_list[index]
-        Z_c = self.Z_c_list[index]
+        Z_i = self.Z_i_list[index].detach()
+        Z_f = self.Z_f_list[index].detach()
+        Z_o = self.Z_o_list[index].detach()
+        Z_c = self.Z_c_list[index].detach()
 
-        I = self.I_list[index]
-        F = self.F_list[index]
-        O = self.O_list[index]
-        C = self.C_list[index]
+        I = self.I_list[index].detach()
+        F = self.F_list[index].detach()
+        O = self.O_list[index].detach()
+        C = self.C_list[index].detach()
 
-        C_prev = self.C_prev_list[index]
-        C_tilda = self.C_tilda_list[index]
+        C_prev = self.C_prev_list[index].detach()
+        C_tilda = self.C_tilda_list[index].detach()
 
-        W_q = self.W_hq_list[index]
-        b_q = self.b_hq_list[index]
+        W_q = self.W_hq_list[index].detach()
+        b_q = self.b_hq_list[index].detach()
 
-        return X, H, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, Z_i, Z_f, Z_o, Z_c, I, F, O, C, C_prev, C_tilda, W_q, b_q
+        return X, H, H_prev, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, Z_i, Z_f, Z_o, Z_c, I, F, O, C, C_prev, C_tilda, W_q, b_q
 
     def get_forward_params_of_layer(self, index: int):
         # index范围是0 ~ h_num - 1
@@ -276,11 +312,14 @@ class LSTM(nn.Module):
                 C_tilda = tanh(X @ W_xc + H @ W_hc + b_c)
                 self.C_tilda_list[i] = C_tilda
 
-                # 记录C_t-1，便于计算反向传播
+                # 存储旧的记忆元状态C_t-1，便于计算反向传播
                 self.C_prev_list[i] = C
 
                 # 新的细胞状态，由 遗忘门×过去细胞状态 + 输入门×候选细胞状态组成（注意这里是按元素乘法而非矩阵乘法）
                 C = F * C + I * C_tilda
+
+                # 存储旧的隐藏层状态H_t-1 n×h
+                self.H_prev_list[i] = H
 
                 # 新的隐藏状态 n×h
                 H = O * tanh(C)
@@ -339,23 +378,31 @@ class LSTM(nn.Module):
 
     # 单层的反向传播
     def layer_backward(self, index, dY, dH_next=None, dC_next=None):
-        X, H, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, Z_i, Z_f, Z_o, Z_c, I, F, O, C, C_prev, C_tilda, W_q, b_q = self.get_backward_params_of_layer(index)
+        X, H, H_prev, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, Z_i, Z_f, Z_o, Z_c, I, F, O, C, C_prev, C_tilda, W_q, b_q = self.get_backward_params_of_layer(index)
+
+        # 检查基本变量
+        for name, tensor in [("dY", dY), ("H", H), ("H_prev", H_prev), ("C", C), ("C_prev", C_prev)]:
+            check_tensor(name, tensor, index)
 
         if dH_next is None:
-            dH_next = torch.zeros_like(H)
+            _dH_next = torch.zeros_like(H)
+        else:
+            _dH_next = dH_next.detach()
         if dC_next is None:
-            dC_next = torch.zeros_like(C)
+            _dC_next = torch.zeros_like(C)
+        else:
+            _dC_next = dC_next.detach()
 
         # 前半部分是来自当前时间步Y_t的梯度
         # 由于每个Y计算时都使用了Ht-1，故要再算上Y_t+1计算出的H的梯度dH_next
-        dH = dY @ W_q.t() + dH_next
+        dH = dY @ W_q.t() + _dH_next
 
         dW_q = H.t() @ dY
         db_q = dY.sum(dim=0, keepdim=True)
         dO = dH * tanh(C)
 
         # 同理,C的梯度是由H传递下来的
-        dC = O * dH * tanh_derivative(C) + dC_next
+        dC = O * dH * tanh_derivative(C) + _dC_next
 
         dF = dC * C_prev
         dI = dC * C_tilda
@@ -368,19 +415,19 @@ class LSTM(nn.Module):
         dZ_c = tanh_derivative(Z_c) * dC_tilda
 
         dW_xi = X.t() @ dZ_i
-        dW_hi = H.t() @ dZ_i
+        dW_hi = H_prev.t() @ dZ_i
         db_i = dZ_i.sum(dim=0, keepdim=True)  # b 是 n×h 的，要按 batch 做 sum，下面同理
 
         dW_xf = X.t() @ dZ_f
-        dW_hf = H.t() @ dZ_f
+        dW_hf = H_prev.t() @ dZ_f
         db_f = dZ_f.sum(dim=0, keepdim=True)
 
         dW_xo = X.t() @ dZ_o
-        dW_ho = H.t() @ dZ_o
+        dW_ho = H_prev.t() @ dZ_o
         db_o = dZ_o.sum(dim=0, keepdim=True)
 
         dW_xc = X.t() @ dZ_c
-        dW_hc = H.t() @ dZ_c
+        dW_hc = H_prev.t() @ dZ_c
         db_c = dZ_c.sum(dim=0, keepdim=True)
 
         # X的梯度是四个门方向的梯度之和

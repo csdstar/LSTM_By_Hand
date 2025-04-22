@@ -2,10 +2,12 @@ import csv
 import os
 import warnings
 
+import numpy as np
 import faiss
 import jieba
 import matplotlib.pyplot as plt
 import torch
+import torch.nn.functional as nnFunc
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
@@ -29,7 +31,7 @@ test_label_texts = ["爱吃雪梨。"] * 32
 
 words_num = 636013
 words_dim = 300
-h_list = [3, 9, 81]
+h_list = [30, 120, 300]
 
 # 加载词向量和映射
 embedding_dict, word2index_dict = torch.load(embedding_pt_path), torch.load(word2index_pt_path)
@@ -91,18 +93,22 @@ def build_faiss_index(embedding_dict, word2index_dict):
         embedding_dim = next(iter(embedding_dict.values())).shape[0]
         embedding_matrix = torch.stack([embedding_dict[word] for word in index2word])
         embedding_matrix_np = embedding_matrix.numpy().astype('float32')
-        # 构建索引（L2 距离）
-        print(f"Building Faiss index with {len(index2word)} vectors...")
-        index = faiss.IndexFlatL2(embedding_dim)
+
+        # 对所有词向量进行归一化（单位向量），以便用于 Inner Product 做余弦相似度
+        embedding_matrix_np /= np.linalg.norm(embedding_matrix_np, axis=1, keepdims=True)
+
+        # 构建索引（Inner Product 等价于 Cosine 相似度）
+        print(f"Building Faiss index with {len(index2word)} vectors (cosine)...")
+        index = faiss.IndexFlatIP(embedding_dim)
         index.add(embedding_matrix_np)
 
-        # 保存索引
         print(f"Saving Faiss index to {faiss_index_path}...")
         faiss.write_index(index, faiss_index_path)
 
     return index, index2word
 
 
+# 通过 Faiss 索引检索最近的K个向量
 def query_nearest_words(faiss_index, index2word, Y_pred_tensor, top_k=1):
     # Y_pred_tensor: (batch, embed_dim)
     Y_pred_np = Y_pred_tensor.detach().cpu().numpy().astype('float32')
@@ -161,6 +167,7 @@ def tokens_to_tensor(tokenized_data, embedding_dict, max_len=None):
     return torch.stack(tensor_data)  # shape: (batch, seq_len, embedding_dim)
 
 
+# 训练函数
 def train():
     # 构造训练数据,转换为词向量(batch, seq_len, embed_dim)
     input_sentences = input_texts
@@ -185,9 +192,9 @@ def train():
 
     losses = []
     total_loss = 0
-    loss_func = torch.nn.MSELoss(reduction='mean')
+    loss_func = torch.nn.CosineSimilarity(dim=-1)
 
-    for epoch in range(25):
+    for epoch in range(20):
         print("Epoch: ", epoch)
         for X_batch, Y_batch in tqdm(loader):
             # 从 (batch, seq_len, input_dim) → (seq_len, batch, input_dim)
@@ -204,23 +211,29 @@ def train():
             # 逐时间步计算损失并累加
             for t in range(seq_len):
                 Y_pred = model.Y_list[t]  # (batch, out_dim)
-                Y_true = Y_batch[:, t]  # (batch,)
+                Y_true = Y_batch[:, t]  # (batch, out_dim)
 
-                # 累加损失：每个样本一个数，先平均再加权
-                loss_t = loss_func(Y_pred, Y_true)
+                # 对 Y_pred 和 Y_true 做 L2 归一化（保持一致）
+                Y_pred_norm = nnFunc.normalize(Y_pred, dim=-1, eps=1e-6)
+                Y_true_norm = nnFunc.normalize(Y_true, dim=-1, eps=1e-6)
+
+                # 计算 1 - cosine similarity 作为损失
+                sim = loss_func(Y_pred_norm, Y_true_norm)  # shape: (batch,)
+                loss_t = (1 - sim).mean()  # 平均损失
                 total_loss += loss_t
 
-                # 计算每个时间步的dL/dY
+                # 手动计算每个时间步的dL/dY
                 with torch.no_grad():
-                    # 计算当前时间步的梯度
-                    dY = 2 * (Y_pred - Y_true) / (batch_size * words_dim)
+                    # dL/dY_pred = -(Y_true / ||Y_true||) / ||Y_pred|| + sim * (Y_pred / ||Y_pred||^2)
+                    # 简化为 unit 向量后，近似可用 Y_pred - Y_true 反向方向
+                    dY = (Y_pred_norm - Y_true_norm) / batch_size
                     dY_list.append(dY)
 
             # 反向传播, 包含zero和step
             model.backward(dY_list)
 
             # 打印当前所有梯度的最大值和分布
-            check_all_gradients(model)
+            # check_all_gradients(model)
 
             # 清理缓存
             model.clear_memory()
@@ -267,21 +280,17 @@ def test():
             X_batch = X_batch.permute(1, 0, 2)  # (batch, seq_len, dim) → (seq_len, batch, dim)
 
             Y_pred = model.forward(X_batch)  # (batch, out_dim)
-            Y_pred_np = Y_pred.cpu().detach().numpy().astype('float32')  # 转为 numpy 格式
 
-            # 使用 Faiss 查找每一行向量最近的一个词
-            D, I = faiss_index.search(Y_pred_np, k=1)  # D: 距离，I: 索引
-
-            # 映射回词
-            predicted_words = [index2word[idx] for idx in I[:, 0]]
+            # 使用 Faiss 查找每一行向量最近的K个词
+            predicted_words = query_nearest_words(faiss_index, index2word, Y_pred, 5)
 
             print(f"预测向量为: {Y_pred}")
             print(f"标签向量为: {Y_batch}")
-            print(f"预测词为: {predicted_words}")  # 输出预测词
+            print(f"最近K个预测词为: {predicted_words}")  # 输出预测词
 
 
 def main():
-    # train()
+    train()
     test()
 
 
