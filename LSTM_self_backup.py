@@ -294,45 +294,42 @@ class LSTM(nn.Module):
                 # print(f"前向传播至第{i}层")
                 X, H, C, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, W_q, b_q = self.get_forward_params_of_layer(i)
 
-                # 输入门 I
+                # 输入门I n×h
                 Z_i = X @ W_xi + H @ W_hi + b_i
-                Z_i = torch.clamp(Z_i, -10, 10)  # 避免sigmoid饱和
                 self.Z_i_list[i] = Z_i
+
                 I = sigmoid(Z_i)
                 self.I_list[i] = I
 
-                # 遗忘门 F
+                # 遗忘门F n×h
                 Z_f = X @ W_xf + H @ W_hf + b_f
-                Z_f = torch.clamp(Z_f, -10, 10)
                 self.Z_f_list[i] = Z_f
+
                 F = sigmoid(Z_f)
                 self.F_list[i] = F
 
-                # 输出门 O
+                # 输出门0 n×h
                 Z_o = X @ W_xo + H @ W_ho + b_o
-                Z_o = torch.clamp(Z_o, -10, 10)
                 self.Z_o_list[i] = Z_o
+
                 O = sigmoid(Z_o)
                 self.O_list[i] = O
 
-                # 候选细胞状态 C_tilda
-                Z_c = X @ W_xc + H @ W_hc + b_c
-                Z_c = torch.clamp(Z_c, -10, 10)
-                C_tilda = tanh(Z_c)
+                # 候选细胞状态C_tilda n×h
+                C_tilda = tanh(X @ W_xc + H @ W_hc + b_c)
                 self.C_tilda_list[i] = C_tilda
 
-                self.C_prev_list[i] = C  # 存储旧C
+                # 存储旧的记忆元状态C_t-1，便于计算反向传播
+                self.C_prev_list[i] = C
 
                 # 新的细胞状态，由 遗忘门×过去细胞状态 + 输入门×候选细胞状态组成（注意这里是按元素乘法而非矩阵乘法）
                 C = F * C + I * C_tilda
-                C = torch.clamp(C, -50, 50)  # 限制累加值，避免梯度爆炸
 
                 # 存储旧的隐藏层状态H_t-1 n×h
                 self.H_prev_list[i] = H
 
                 # 新的隐藏状态 n×h
                 H = O * tanh(C)
-                H = torch.clamp(H, -50, 50)  # 限制H输出范围
 
                 # 存储更新后的记忆元和隐藏元
                 self.H_list[i] = H

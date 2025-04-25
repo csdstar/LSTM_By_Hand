@@ -12,6 +12,7 @@ from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
 from LSTM_self import LSTM
+from ffn import FFN_in, FFN_out
 
 # 禁用 FutureWarning
 warnings.simplefilter("ignore", category=FutureWarning)
@@ -23,15 +24,16 @@ faiss_index_path = "./data/faiss_index_file.index"
 max_len = 50  # 设定最大序列长度
 batch_size = 32  # 设定批量大小
 
-# 生成训练数据：重复句子对 "我 爱 吃 苹果" -> "爱 吃 苹果 。"
-input_texts = ["我爱吃雪梨"] * 3000
-label_texts = ["爱吃雪梨。"] * 3000
-test_input_texts = ["我爱吃雪梨"] * 32
-test_label_texts = ["爱吃雪梨。"] * 32
+# 生成训练数据：重复句子对
+input_texts = ["我爱吃苹果"] * 3000
+label_texts = ["爱吃苹果。"] * 3000
+test_input_texts = ["我爱吃苹果"] * 32
+test_label_texts = ["爱吃苹果。"] * 32
 
 words_num = 636013
-words_dim = 300
-h_list = [30, 120, 300]
+embed_dim = 300
+linear_hidden_size = 512
+h_list = [512, 512, 512]
 
 # 加载词向量和映射
 embedding_dict, word2index_dict = torch.load(embedding_pt_path), torch.load(word2index_pt_path)
@@ -184,11 +186,13 @@ def train():
 
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
-    model = LSTM(batch_size, words_dim, words_dim, h_list.copy())
-    if os.path.exists("./model.pth"):
-        model.load_state_dict(torch.load("./model.pth"))  # 加载权重
+    model = LSTM(batch_size, linear_hidden_size, linear_hidden_size, h_list.copy())
+    ffn_in = FFN_in(embed_dim, linear_hidden_size)
+    ffn_out = FFN_out(linear_hidden_size, embed_dim)
 
     model.train()
+    ffn_in.train()
+    ffn_out.train()
 
     losses = []
     loss_func = torch.nn.CosineSimilarity(dim=-1)
@@ -198,20 +202,21 @@ def train():
         batch_losses = []
         loss = 0
         for X_batch, Y_batch in tqdm(loader):
-            # 从 (batch, seq_len, input_dim) → (seq_len, batch, input_dim)
-            X_batch = X_batch.permute(1, 0, 2)
-
             # 初始化总损失与每个时间步的Y梯度列表
             batch_loss = 0
             dY_list = []
 
             # 进行前向传播
+            X_batch = ffn_in(X_batch)
+            # 从 (batch, seq_len, input_dim) → (seq_len, batch, input_dim)
+            X_batch = X_batch.permute(1, 0, 2)
             model.forward(X_batch)
             seq_len = len(model.Y_list)
 
-            # 逐时间步计算损失并累加
+            # 遍历每个时间步的输出 → FFN_out → 计算损失
             for t in range(seq_len):
-                Y_pred = model.Y_list[t]  # (batch, out_dim)
+                Y_lstm = model.Y_list[t]  # (batch, out_dim)
+                Y_pred = ffn_out(Y_lstm)  # (batch, 300)
                 Y_true = Y_batch[:, t]  # (batch, out_dim)
 
                 # 对 Y_pred 和 Y_true 做 L2 归一化（保持一致）
@@ -223,12 +228,16 @@ def train():
                 loss_t = (1 - sim).mean()  # 平均损失
                 batch_loss = loss_t.detach()
 
-                # 手动计算每个时间步的dL/dY
-                with torch.no_grad():
-                    # dL/dY_pred = -(Y_true / ||Y_true||) / ||Y_pred|| + sim * (Y_pred / ||Y_pred||^2)
-                    # 简化为 unit 向量后，近似可用 Y_pred - Y_true 反向方向
-                    dY = (Y_pred_norm - Y_true_norm) / batch_size
-                    dY_list.append(dY)
+                # 手动获取 loss_t 对 Y_lstm 的梯度
+                dY = torch.autograd.grad(
+                    outputs=loss_t,
+                    inputs=Y_lstm,
+                    retain_graph=True,
+                    create_graph=False,  # 不需要进一步反向传播图
+                    only_inputs=True
+                )[0]  # shape: (batch, 512)
+
+                dY_list.append(dY)
 
             # 反向传播, 包含zero和step
             model.backward(dY_list)
@@ -241,15 +250,16 @@ def train():
             loss += batch_loss
             batch_losses.append(batch_loss)
 
+        # loss是整个epoch所有batch_loss之和
+        print(f"epoch {epoch} total_loss:{loss}")
+        losses.append(loss)
+
         # 在每个 epoch 绘制 batch_losses
         plt.plot(batch_losses)  # 绘制当前 epoch 中每个批次的损失
         plt.xlabel('Batch')
         plt.ylabel('Loss')
         plt.title(f'Epoch {epoch} Batch Losses')
         plt.show()
-
-        losses.append(loss)
-        print(f"epoch {epoch} total_loss:{loss}")
 
     # 绘制损失曲线
     plt.plot(range(len(losses)), losses)  # x 轴为 epoch，y 轴为损失
@@ -259,7 +269,11 @@ def train():
     plt.show()
 
     # 保存模型
-    torch.save(model.state_dict(), "./model.pth")
+    torch.save({
+        'lstm': model.state_dict(),
+        'ffn_in': ffn_in.state_dict(),
+        'ffn_out': ffn_out.state_dict()
+    }, 'model.pth')
 
 
 def test():
@@ -279,24 +293,39 @@ def test():
     dataset = TensorDataset(test_inputs, test_labels)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
-    # 模型参数
-    model = LSTM(batch_size, words_dim, words_dim, h_list.copy())
-    print(model)
-    model.load_state_dict(torch.load("./model.pth"))  # 加载权重
-    model.eval()  # 切换到评估模式（禁用 dropout）
+    # 加载模型参数
+    checkpoint = torch.load("./model.pth")
+    print("Keys in checkpoint:", checkpoint.keys())
+    ffn_in = FFN_in(input_dim=embed_dim, hidden_dim=linear_hidden_size)
+    ffn_out = FFN_out(input_dim=linear_hidden_size, output_dim=embed_dim)
+    model = LSTM(batch_size, linear_hidden_size, linear_hidden_size, h_list.copy())
+
+    ffn_in.load_state_dict(checkpoint['ffn_in'])
+    ffn_out.load_state_dict(checkpoint['ffn_out'])
+    model.load_state_dict(checkpoint['lstm'])
+
+    # 切换到评估模式（禁用 dropout）
+    ffn_in.eval()
+    ffn_out.eval()
+    model.eval()
 
     with torch.no_grad():  # 不计算梯度，节省内存
         for X_batch, Y_batch in loader:
-            X_batch = X_batch.permute(1, 0, 2)  # (batch, seq_len, dim) → (seq_len, batch, dim)
+            X_batch = ffn_in(X_batch)
+            X_batch = X_batch.permute(1, 0, 2)
+            model.forward(X_batch)
+            seq_len = len(model.Y_list)
+            for t in range(seq_len):
+                Y_lstm = model.Y_list[t]
+                Y_pred = ffn_out(Y_lstm.detach())  # (batch, out_dim)
+                true_word = label_tokenized[0][t]
+                # 使用 Faiss 查找每一行向量最近的K个词
+                predicted_words = query_nearest_words(faiss_index, index2word, Y_pred, 3)[0]
+                print(f"真实词:{true_word}, 预测词: {predicted_words}")  # 输出预测词
 
-            Y_pred = model.forward(X_batch)  # (batch, out_dim)
-
-            # 使用 Faiss 查找每一行向量最近的K个词
-            predicted_words = query_nearest_words(faiss_index, index2word, Y_pred, 5)
-
-            print(f"预测向量为: {Y_pred}")
-            print(f"标签向量为: {Y_batch}")
-            print(f"最近K个预测词为: {predicted_words}")  # 输出预测词
+            # # 使用 Faiss 查找每一行向量最近的K个词
+            # predicted_words = query_nearest_words(faiss_index, index2word, Y_pred, 3)[0]
+            # print(f"最近K个预测词为: {predicted_words}")  # 输出预测词
 
 
 def main():
