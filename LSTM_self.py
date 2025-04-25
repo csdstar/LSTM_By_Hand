@@ -339,7 +339,7 @@ class LSTM(nn.Module):
                 self.C_list[i] = C
 
                 # 计算当前层的输出
-                Y = H @ W_q + b_q
+                Y = H.detach() @ W_q + b_q
 
                 # 上一层的输出作为下一层的输入
                 if i < h_num - 1:
