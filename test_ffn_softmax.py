@@ -25,10 +25,9 @@ max_len = 50  # 设定最大序列长度
 batch_size = 64  # 设定批量大小
 
 # 生成训练数据：重复句子对
-input_texts = ["我爱吃苹果"] * 3000
-label_texts = ["爱吃苹果。"] * 3000
-test_input_texts = ["我爱吃苹果"] * 32
-test_label_texts = ["爱吃苹果。"] * 32
+input_texts = ["人工智能正在迅速改变我们的生活"] * 3000
+
+test_input_texts = ["人工智能正在迅速改变我们的生活"] * batch_size
 
 words_num = 636013
 embed_dim = 300
@@ -149,9 +148,12 @@ def train():
     input_tokenized = tokenize_sentences(input_sentences, embedding_dict)
     inputs = tokens_to_tensor(input_tokenized, embedding_dict)
 
-    # 标签数据，同样将其转为词向量(batch, seq_len, embed_dim)
-    label_sentences = label_texts
-    label_tokenized = tokenize_sentences(label_sentences, embedding_dict)
+    # 标签数据，将其转为词索引(batch, seq_len,) 值为索引
+    label_tokenized = []
+    for sentence in input_tokenized:
+        # 去掉第一个 token，并在末尾添加句号 token
+        label_sentence = sentence[1:] + ['。']  # 句号 token
+        label_tokenized.append(label_sentence)
     labels = torch.tensor([words_to_indices(words, word2index_dict) for words in label_tokenized], dtype=torch.long)
 
     # 构建数据集
@@ -170,7 +172,7 @@ def train():
     losses = []
     loss_func = torch.nn.CrossEntropyLoss()
 
-    for epoch in range(5):
+    for epoch in range(3):
         print("Epoch: ", epoch)
         batch_losses = []
         loss = 0
@@ -211,15 +213,15 @@ def train():
 
             # 清理缓存，统计loss和batch_loss
             model.clear_memory()
-            loss += batch_loss.detach()
-            batch_losses.append(batch_loss.detach())
+            loss += batch_loss.detach().cpu()
+            batch_losses.append(batch_loss.detach().cpu())
 
         # loss是整个epoch所有batch_loss之和
         print(f"epoch {epoch} total_loss:{loss}")
         losses.append(loss)
 
         # 在每个 epoch 绘制 batch_losses
-        plt.plot(batch_losses.cpu().numpy())  # 绘制当前 epoch 中每个批次的损失
+        plt.plot(batch_losses)  # 绘制当前 epoch 中每个批次的损失
         plt.xlabel('Batch')
         plt.ylabel('Loss')
         plt.title(f'Epoch {epoch} Batch Losses')
@@ -246,9 +248,12 @@ def test():
     test_tokenized = tokenize_sentences(test_sentences, embedding_dict)
     test_inputs = tokens_to_tensor(test_tokenized, embedding_dict)  # (batch, seq_len, dim)
 
-    # 测试标签（如果需要计算准确率等）
-    label_sentences = test_label_texts
-    label_tokenized = tokenize_sentences(label_sentences, embedding_dict)
+    # 标签数据，将其转为词索引(batch, seq_len,) 值为索引
+    label_tokenized = []
+    for sentence in test_tokenized:
+        # 去掉第一个 token，并在末尾添加句号 token
+        label_sentence = sentence[1:] + ['。']  # 句号 token
+        label_tokenized.append(label_sentence)
     test_labels = torch.tensor([words_to_indices(words, word2index_dict) for words in label_tokenized], dtype=torch.long)
 
     # 构建测试集
@@ -292,7 +297,7 @@ def test():
 
 
 def main():
-    train()
+    # train()
     test()
 
 
