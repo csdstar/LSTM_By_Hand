@@ -135,9 +135,6 @@ class LSTM(nn.Module):
         # 隐藏层数量
         self.h_num = len(self.h_list)
 
-        # dropout概率
-        self.dropout_rate = 0.3
-
         # 将初始输入的n×d的d视作上一个隐藏层的输出,便于后续代码实现
         # 此时h_list[0]为d, h_list[m]为第m个隐藏层的h, h_list[m+1]为最终输出的维度大小
         self.h_list.insert(0, self.in_d)
@@ -388,7 +385,9 @@ class LSTM(nn.Module):
 
     # 单层的反向传播
     def layer_backward(self, index, dY, dH_next=None, dC_next=None):
-        X, H, H_prev, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc, b_i, b_f, b_o, b_c, Z_i, Z_f, Z_o, Z_c, I, F, O, C, C_prev, C_tilda, W_q, b_q = self.get_backward_params_of_layer(index)
+        (X, H, H_prev, W_xi, W_xf, W_xo, W_xc, W_hi, W_hf, W_ho, W_hc,
+         b_i, b_f, b_o, b_c, Z_i, Z_f, Z_o, Z_c,
+         I, F, O, C, C_prev, C_tilda, W_q, b_q) = self.get_backward_params_of_layer(index)
 
         # 对部分非可更新梯度单独裁剪，防止跨层梯度爆炸
         max_norm = 5.0
@@ -415,18 +414,17 @@ class LSTM(nn.Module):
         # 前半部分是来自当前时间步Y_t的梯度
         # 由于每个Y计算时都使用了Ht-1，故要再算上Y_t+1计算出的H的梯度dH_next
         dH = dY @ W_q.t() + _dH_next
-
         dW_q = H.t() @ dY
         db_q = dY.sum(dim=0, keepdim=True)
-        dO = dH * tanh(C)
 
-        # 同理,C的梯度是由H传递下来的
+        dO = dH * tanh(C)
+        # 与H同理,C的梯度包含下一时间步的梯度
         dC = O * dH * tanh_derivative(C) + _dC_next
 
         dF = dC * C_prev
         dI = dC * C_tilda
-        dC_prev = dC * F
-        dC_tilda = dC * I
+        dC_prev = F * dC
+        dC_tilda = I * dC
 
         dZ_i = sigmoid_derivative(Z_i) * dI
         dZ_f = sigmoid_derivative(Z_f) * dF

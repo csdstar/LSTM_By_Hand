@@ -121,11 +121,8 @@ def tokens_to_tensor(tokenized_data, embedding_dict, max_len=None):
                 vecs.append(embedding_dict[token])
             else:
                 print("有OOV词！")
-                continue  # 忽略OOV词
-
-        if not vecs:
-            print("整句都是OOV词，跳过")
-            continue  # 如果没有任何词在词典中，跳过该句
+                vecs.append(torch.randn(300))
+                continue
 
         # 如果设置了最大序列长度，进行截断或填充
         if max_len:
@@ -172,7 +169,7 @@ def train():
     losses = []
     loss_func = torch.nn.CrossEntropyLoss()
 
-    for epoch in range(3):
+    for epoch in range(6):
         print("Epoch: ", epoch)
         batch_losses = []
         loss = 0
@@ -296,9 +293,64 @@ def test():
                 print(f"时间步{t}: 真实词:{true_word} 预测词:{pred_word}")
 
 
+def generate():
+    # 加载模型参数
+    checkpoint = torch.load("./model - 副本.pth")
+    print("Keys in checkpoint:", checkpoint.keys())
+    model = LSTM(batch_size, ffn_in_hidden_size, lstm_outdim, h_list.copy())
+    ffn_in = FFN_in(embed_dim, ffn_in_hidden_size)
+    ffn_out = FFN_out(lstm_outdim, words_num)
+
+    ffn_in.load_state_dict(checkpoint['ffn_in'])
+    ffn_out.load_state_dict(checkpoint['ffn_out'])
+    model.load_state_dict(checkpoint['lstm'])
+
+    # 切换到评估模式（禁用 dropout）
+    ffn_in.eval()
+    ffn_out.eval()
+    model.eval()
+
+    print("模型加载完毕，可以输入文本。")
+
+    while True:
+        # 获取用户输入词作为初始输入
+        initial_word = input("\n请输入一个词作为生成的起始（输入'。'结束）：")
+
+        # 如果用户输入'。'，结束生成
+        if initial_word == '。':
+            print("结束生成。")
+            break
+
+        # 转换初始输入为token并输入模型
+        inputs = [initial_word] * batch_size  # 重复输入，适应batch_size
+        inputs = tokenize_sentences(inputs, embedding_dict)
+        inputs = tokens_to_tensor(inputs, embedding_dict)
+
+        with torch.no_grad():  # 不计算梯度，节省内存
+            out_len = 0
+            while True:
+                inputs = ffn_in(inputs)
+                inputs = inputs.permute(1, 0, 2)
+                Y_lstm = model.forward(inputs)
+                Y_pred_logits = ffn_out(Y_lstm.detach())  # (batch, words_num)
+                # 使用logits从词表中选择最大概率词
+                Y_pred_index = torch.argmax(Y_pred_logits, dim=1)[0]  # (batch,)
+                pred_word = index2word_dict[Y_pred_index.item()]
+                print(pred_word)
+                out_len += 1
+                if pred_word == '。' or out_len >= max_len:
+                    model.clear_memory()
+                    break
+
+                # 将预测词重新转换为一个tensor输入
+                tokenized = [pred_word for _ in range(batch_size)]  # (batch_size,)
+                inputs = tokens_to_tensor(tokenized, embedding_dict)
+
+
 def main():
     # train()
-    test()
+    # test()
+    generate()
 
 
 if __name__ == "__main__":
