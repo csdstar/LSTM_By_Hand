@@ -11,7 +11,7 @@ import torch.nn.functional as nnFunc
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
-from LSTM_self import LSTM
+from LSTM_self_backup import LSTM, check_all_gradients
 from ffn import FFN_in, FFN_out
 
 # 禁用 FutureWarning
@@ -243,7 +243,7 @@ def train():
             model.backward(dY_list)
 
             # 打印当前所有梯度的最大值和分布
-            # check_all_gradients(model)
+            check_all_gradients(model)
 
             # 清理缓存，统计loss和batch_loss
             model.clear_memory()

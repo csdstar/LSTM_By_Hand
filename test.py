@@ -11,7 +11,7 @@ import torch.nn.functional as nnFunc
 from torch.utils.data import TensorDataset, DataLoader
 from tqdm import tqdm
 
-from LSTM_self import LSTM
+from LSTM_self_backup import LSTM, check_all_gradients
 
 # 禁用 FutureWarning
 warnings.simplefilter("ignore", category=FutureWarning)
@@ -185,8 +185,8 @@ def train():
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
     model = LSTM(batch_size, words_dim, words_dim, h_list.copy())
-    if os.path.exists("./model.pth"):
-        model.load_state_dict(torch.load("./model.pth"))  # 加载权重
+    # if os.path.exists("./model.pth"):
+    #     model.load_state_dict(torch.load("./model.pth"))  # 加载权重
 
     model.train()
 
@@ -234,7 +234,7 @@ def train():
             model.backward(dY_list)
 
             # 打印当前所有梯度的最大值和分布
-            # check_all_gradients(model)
+            check_all_gradients(model)
 
             # 清理缓存，统计loss和batch_loss
             model.clear_memory()
